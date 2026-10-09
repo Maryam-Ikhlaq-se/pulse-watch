@@ -31,17 +31,22 @@ get_disk() {
     df / | awk 'NR==2 {gsub("%",""); print $5}'
 
 }
+check_metric() {
+    local name="$1" value="$2" limit="$3"
+    if (( $(echo "$value > $limit" | bc -l) )); then
+         log "$name: ${value}% - HIGH"
+    else
+         log "$name: ${value}% - NORMAL"
+    fi
+}
 while true; do
     CPU_USAGE=$(get_cpu)
     MEM_USAGE=$(get_memory)
     DISK_USAGE=$(get_disk)
-    if (( $(echo "$CPU_USAGE > $THRESHOLD" | bc -l) )); then
-        log "CPU: ${CPU_USAGE}% - HIGH"
-    else
-        log "CPU: ${CPU_USAGE}% - NORMAL"
-    fi
 
-    log "MEM: ${MEM_USAGE}%"
-    log "DISK: ${DISK_USAGE}%"
+    check_metric "CPU" "$CPU_USAGE"  "$THRESHOLD"
+    check_metric "MEM"  "$MEM_USAGE" "$THRESHOLD"
+    check_metric  "DISK" "$DISK_USAGE" "THRESHOLD"
+
     sleep "$INTERVAL"
 done
