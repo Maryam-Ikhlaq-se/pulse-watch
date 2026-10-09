@@ -27,11 +27,14 @@ get_cpu() {
 get_memory() {
     free | awk '/Mem:/ {printf "%.1f", $3/$2*100}'
 }
+get_disk() {
+    df / | awk 'NR==2 {gsub("%",""); print $5}'
 
+}
 while true; do
     CPU_USAGE=$(get_cpu)
     MEM_USAGE=$(get_memory)
-
+    DISK_USAGE=$(get_disk)
     if (( $(echo "$CPU_USAGE > $THRESHOLD" | bc -l) )); then
         log "CPU: ${CPU_USAGE}% - HIGH"
     else
@@ -39,6 +42,6 @@ while true; do
     fi
 
     log "MEM: ${MEM_USAGE}%"
-
+    log "DISK: ${DISK_USAGE}%"
     sleep "$INTERVAL"
 done
