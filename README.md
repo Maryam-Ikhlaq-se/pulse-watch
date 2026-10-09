@@ -120,13 +120,13 @@ Usage: ./monitor.sh [threshold]
 
 ```mermaid
 flowchart TD
-    A([Start]) --> B[Read threshold argument]
-    B --> C{Valid number 1 to 100 and bc installed?}
-    C -- No --> D[Print error to stderr and exit 1]
-    C -- Yes --> E[Collect CPU, MEM and DISK]
-    E --> F[check_metric for each value]
-    F --> G[log: timestamp and status to screen and file]
-    G --> H[sleep INTERVAL]
+    A(["Start"]) --> B["Read threshold argument"]
+    B --> C{"Valid number 1 to 100 and bc installed?"}
+    C -->|No| D["Print error to stderr and exit 1"]
+    C -->|Yes| E["Collect CPU, MEM and DISK"]
+    E --> F["check_metric for each value"]
+    F --> G["log - timestamp and status to screen and file"]
+    G --> H["sleep INTERVAL"]
     H --> E
 ```
 
