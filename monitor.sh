@@ -1,6 +1,6 @@
 #!/bin/bash
 
-THRESHOLD=80
+THRESHOLD="${1:-80}"
 INTERVAL=5
 
 while true;do
