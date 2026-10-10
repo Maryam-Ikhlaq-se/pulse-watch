@@ -1,10 +1,44 @@
 #!/bin/bash
 
-THRESHOLD="${1:-80}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${PULSEWATCH_CONF:-$SCRIPT_DIR/pulsewatch.conf}"
 
-if ! [[ "$THRESHOLD" =~ ^[0-9]+$ ]] || (( 10#$THRESHOLD < 1 || 10#$THRESHOLD > 100 )); then
-    echo "Error: threshold must be a whole number from 1 to 100." >&2
-    echo "Usage: $0 [threshold]" >&2
+# Defaults, used when the config file is missing or leaves a value out
+CPU_LIMIT=80
+MEM_LIMIT=80
+DISK_LIMIT=90
+INTERVAL=5
+LOG_FILE="pulsewatch.log"
+
+validate_limit() {
+    local name="$1" value="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || (( 10#$value < 1 || 10#$value > 100 )); then
+        echo "Error: $name must be a whole number from 1 to 100 (got '$value')." >&2
+        echo "Usage: $0 [threshold]" >&2
+        exit 1
+    fi
+}
+
+# 1. Load the config file (overrides defaults)
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+fi
+
+# 2. A command-line threshold overrides every limit
+if [[ -n "$1" ]]; then
+    validate_limit "threshold" "$1"
+    CPU_LIMIT="$1"
+    MEM_LIMIT="$1"
+    DISK_LIMIT="$1"
+fi
+
+# 3. Validate the final values
+validate_limit "CPU_LIMIT" "$CPU_LIMIT"
+validate_limit "MEM_LIMIT" "$MEM_LIMIT"
+validate_limit "DISK_LIMIT" "$DISK_LIMIT"
+
+if ! [[ "$INTERVAL" =~ ^[0-9]+$ ]] || (( 10#$INTERVAL < 1 )); then
+    echo "Error: INTERVAL must be a whole number of seconds, 1 or more (got '$INTERVAL')." >&2
     exit 1
 fi
 
@@ -12,9 +46,6 @@ if ! command -v bc >/dev/null 2>&1; then
     echo "Error: 'bc' is required. Install it with: sudo apt install bc" >&2
     exit 1
 fi
-
-INTERVAL=5
-LOG_FILE="pulsewatch.log"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_FILE"
@@ -27,26 +58,30 @@ get_cpu() {
 get_memory() {
     free | awk '/Mem:/ {printf "%.1f", $3/$2*100}'
 }
+
 get_disk() {
     df / | awk 'NR==2 {gsub("%",""); print $5}'
-
 }
+
 check_metric() {
     local name="$1" value="$2" limit="$3"
     if (( $(echo "$value > $limit" | bc -l) )); then
-         log "$name: ${value}% - HIGH"
+        log "$name: ${value}% - HIGH"
     else
-         log "$name: ${value}% - NORMAL"
+        log "$name: ${value}% - NORMAL"
     fi
 }
+
+log "PulseWatch started - limits: CPU ${CPU_LIMIT}%, MEM ${MEM_LIMIT}%, DISK ${DISK_LIMIT}%, interval ${INTERVAL}s"
+
 while true; do
     CPU_USAGE=$(get_cpu)
     MEM_USAGE=$(get_memory)
     DISK_USAGE=$(get_disk)
 
-    check_metric "CPU" "$CPU_USAGE"  "$THRESHOLD"
-    check_metric "MEM"  "$MEM_USAGE" "$THRESHOLD"
-    check_metric  "DISK" "$DISK_USAGE" "THRESHOLD"
+    check_metric "CPU" "$CPU_USAGE" "$CPU_LIMIT"
+    check_metric "MEM" "$MEM_USAGE" "$MEM_LIMIT"
+    check_metric "DISK" "$DISK_USAGE" "$DISK_LIMIT"
 
     sleep "$INTERVAL"
 done
