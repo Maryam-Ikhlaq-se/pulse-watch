@@ -63,10 +63,35 @@ get_disk() {
     df / | awk 'NR==2 {gsub("%",""); print $5}'
 }
 
+# Builds the alert text. Prints it; does not send it anywhere.
+build_alert() {
+    local name="$1" value="$2" limit="$3"
+    local host now action
+    host=$(hostname)
+    now=$(date '+%Y-%m-%d %H:%M:%S')
+
+    case "$name" in
+        CPU)  action="run 'top' to find the busy process" ;;
+        MEM)  action="run 'ps aux --sort=-%mem | head' to find the largest process" ;;
+        DISK) action="run 'du -xh / --max-depth=1 2>/dev/null | sort -h | tail' to find the biggest folders" ;;
+        *)    action="check the server" ;;
+    esac
+
+    printf '🔴 ALERT: %s HIGH\nServer: %s\nTime: %s\n%s: %s%% (limit %s%%)\nCheck first: %s\n' \
+        "$name" "$host" "$now" "$name" "$value" "$limit" "$action"
+}
+
+# Delivers the alert. For now it prints; WhatsApp will replace this later.
+send_alert() {
+    build_alert "$@"
+    echo
+}
+
 check_metric() {
     local name="$1" value="$2" limit="$3"
     if (( $(echo "$value > $limit" | bc -l) )); then
         log "$name: ${value}% - HIGH"
+        send_alert "$name" "$value" "$limit"
     else
         log "$name: ${value}% - NORMAL"
     fi
