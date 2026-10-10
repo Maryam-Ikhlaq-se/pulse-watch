@@ -8,6 +8,7 @@ CPU_LIMIT=80
 MEM_LIMIT=80
 DISK_LIMIT=90
 INTERVAL=5
+COOLDOWN=300
 LOG_FILE="pulsewatch.log"
 
 validate_limit() {
@@ -15,6 +16,14 @@ validate_limit() {
     if ! [[ "$value" =~ ^[0-9]+$ ]] || (( 10#$value < 1 || 10#$value > 100 )); then
         echo "Error: $name must be a whole number from 1 to 100 (got '$value')." >&2
         echo "Usage: $0 [threshold]" >&2
+        exit 1
+    fi
+}
+
+validate_seconds() {
+    local name="$1" value="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || (( 10#$value < 1 )); then
+        echo "Error: $name must be a whole number of seconds, 1 or more (got '$value')." >&2
         exit 1
     fi
 }
@@ -36,16 +45,22 @@ fi
 validate_limit "CPU_LIMIT" "$CPU_LIMIT"
 validate_limit "MEM_LIMIT" "$MEM_LIMIT"
 validate_limit "DISK_LIMIT" "$DISK_LIMIT"
-
-if ! [[ "$INTERVAL" =~ ^[0-9]+$ ]] || (( 10#$INTERVAL < 1 )); then
-    echo "Error: INTERVAL must be a whole number of seconds, 1 or more (got '$INTERVAL')." >&2
-    exit 1
-fi
+validate_seconds "INTERVAL" "$INTERVAL"
+validate_seconds "COOLDOWN" "$COOLDOWN"
 
 if ! command -v bc >/dev/null 2>&1; then
     echo "Error: 'bc' is required. Install it with: sudo apt install bc" >&2
     exit 1
 fi
+
+# Alert state, kept in memory for each metric (CPU, MEM, DISK)
+declare -A METRIC_STATE     # "HIGH" while a problem is ongoing
+declare -A INCIDENT_START   # when the current problem began (epoch seconds)
+declare -A LAST_ALERT       # when we last sent a message about it (epoch seconds)
+
+now_epoch() {
+    date +%s
+}
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_FILE"
@@ -63,12 +78,17 @@ get_disk() {
     df / | awk 'NR==2 {gsub("%",""); print $5}'
 }
 
-# Builds the alert text. Prints it; does not send it anywhere.
+# Builds the message text. kind is ALERT, REMINDER or RECOVERED.
 build_alert() {
-    local name="$1" value="$2" limit="$3"
-    local host now action
+    local kind="$1" name="$2" value="$3" limit="$4"
+    local host now since action header extra
     host=$(hostname)
     now=$(date '+%Y-%m-%d %H:%M:%S')
+
+    since=""
+    if [[ -n "${INCIDENT_START[$name]}" ]]; then
+        since=$(date -d "@${INCIDENT_START[$name]}" '+%H:%M:%S')
+    fi
 
     case "$name" in
         CPU)  action="run 'top' to find the busy process" ;;
@@ -77,36 +97,73 @@ build_alert() {
         *)    action="check the server" ;;
     esac
 
-    printf '🔴 ALERT: %s HIGH\nServer: %s\nTime: %s\n%s: %s%% (limit %s%%)\nCheck first: %s\n' \
-        "$name" "$host" "$now" "$name" "$value" "$limit" "$action"
+    case "$kind" in
+        ALERT)
+            header="🔴 ALERT: $name HIGH"
+            extra="Check first: $action" ;;
+        REMINDER)
+            header="🟠 STILL HIGH: $name"
+            extra="Since: $since"$'\n'"Check first: $action" ;;
+        RECOVERED)
+            header="✅ RECOVERED: $name"
+            extra="Was high since: $since" ;;
+    esac
+
+    printf '%s\nServer: %s\nTime: %s\n%s: %s%% (limit %s%%)\n%s\n' \
+        "$header" "$host" "$now" "$name" "$value" "$limit" "$extra"
 }
 
-# Delivers the alert. For now it prints; WhatsApp will replace this later.
+# Delivers the message. For now it prints; WhatsApp will replace this later.
 send_alert() {
     build_alert "$@"
     echo
 }
 
+# Logs every reading, but only sends a message when something changes
+# (new problem, problem still ongoing after COOLDOWN, or recovery).
 check_metric() {
     local name="$1" value="$2" limit="$3"
+    local now
+    now=$(now_epoch)
+
     if (( $(echo "$value > $limit" | bc -l) )); then
         log "$name: ${value}% - HIGH"
-        send_alert "$name" "$value" "$limit"
+        if [[ "${METRIC_STATE[$name]}" != "HIGH" ]]; then
+            METRIC_STATE[$name]="HIGH"
+            INCIDENT_START[$name]="$now"
+            LAST_ALERT[$name]="$now"
+            send_alert ALERT "$name" "$value" "$limit"
+        elif (( now - LAST_ALERT[$name] >= COOLDOWN )); then
+            LAST_ALERT[$name]="$now"
+            send_alert REMINDER "$name" "$value" "$limit"
+        fi
     else
         log "$name: ${value}% - NORMAL"
+        if [[ "${METRIC_STATE[$name]}" == "HIGH" ]]; then
+            send_alert RECOVERED "$name" "$value" "$limit"
+            METRIC_STATE[$name]="OK"
+            unset "INCIDENT_START[$name]"
+        fi
     fi
 }
 
-log "PulseWatch started - limits: CPU ${CPU_LIMIT}%, MEM ${MEM_LIMIT}%, DISK ${DISK_LIMIT}%, interval ${INTERVAL}s"
+main() {
+    log "PulseWatch started - limits: CPU ${CPU_LIMIT}%, MEM ${MEM_LIMIT}%, DISK ${DISK_LIMIT}%, interval ${INTERVAL}s, cooldown ${COOLDOWN}s"
 
-while true; do
-    CPU_USAGE=$(get_cpu)
-    MEM_USAGE=$(get_memory)
-    DISK_USAGE=$(get_disk)
+    while true; do
+        CPU_USAGE=$(get_cpu)
+        MEM_USAGE=$(get_memory)
+        DISK_USAGE=$(get_disk)
 
-    check_metric "CPU" "$CPU_USAGE" "$CPU_LIMIT"
-    check_metric "MEM" "$MEM_USAGE" "$MEM_LIMIT"
-    check_metric "DISK" "$DISK_USAGE" "$DISK_LIMIT"
+        check_metric "CPU" "$CPU_USAGE" "$CPU_LIMIT"
+        check_metric "MEM" "$MEM_USAGE" "$MEM_LIMIT"
+        check_metric "DISK" "$DISK_USAGE" "$DISK_LIMIT"
 
-    sleep "$INTERVAL"
-done
+        sleep "$INTERVAL"
+    done
+}
+
+# Run the loop only when executed directly, not when sourced by a test
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main
+fi
