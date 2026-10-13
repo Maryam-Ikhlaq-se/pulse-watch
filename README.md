@@ -1,4 +1,4 @@
-PulseWatch
+# PulseWatch
 
 **A lightweight Linux server monitor written in Bash. It watches CPU, memory and disk, timestamps every reading, and sends clear alerts when a metric goes above its own configurable limit.**
 
